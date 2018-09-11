@@ -6,6 +6,10 @@ language: python
 python:
     - 2.7
 
+stages:
+    - test
+    - report
+
 before_install:
     - wget 'https://github.com/cylc/cylc/archive/master.tar.gz' -O '/tmp/cylc-master.tar.gz'
     - tar -xvf '/tmp/cylc-master.tar.gz' -C "${HOME}"
@@ -17,6 +21,13 @@ before_install:
     - ssh-keygen -t 'rsa' -f "${HOME}/.ssh/id_rsa" -N '' -q
     - cat "${HOME}/.ssh/id_rsa.pub" >>"${HOME}/.ssh/authorized_keys"
     - ssh-keyscan -t 'rsa' 'localhost' >>"${HOME}/.ssh/known_hosts"
+    # Coverage dependencies
+    - pip install coverage pytest-cov
+    - sudo apt-get install -y jq libxml-xpath-perl
+    - latestcodacyjar=$(curl "https://oss.sonatype.org/service/local/repositories/releases/content/com/codacy/codacy-coverage-reporter/maven-metadata.xml" | xpath -e "/metadata/versioning/release/text()")
+    - echo "Downloading latest version $latest of codacy reporter from sonatype"
+    - mvn dependency:get dependency:copy -DoutputDirectory=$HOME -DoutputAbsoluteArtifactFilename=true -Dmdep.stripVersion=true -DrepoUrl=https://oss.sonatype.org/service/local/repositories/releases/content/ -Dartifact=com.codacy:codacy-coverage-reporter:$latestcodacyjar:jar:assembly
+
 
 install: 
     - >
@@ -32,14 +43,22 @@ install:
     - sudo apt-get update
     - sudo apt-get install -y subversion
 
-script: skip
 
 jobs:
     include:
+        # Run tests
         - stage: test
-        - script: >
-            rose test-battery --state=save -j 5 ||
-            (echo -e "\n\nRerunning Failed Tests...\n\n";
-            rose test-battery -v --state=save,failed -j 5)
-        - script: >
-            rose make-docs --venv --dev --strict clean linkcheck doctest html slides latexpdf
+          script:
+          - export COVERAGE_PROCESS_START="${TRAVIS_BUILD_DIR}/.coveragerc"
+          - export PYTHONPATH="${TRAVIS_BUILD_DIR}/.travis"
+          - coverage run .travis/cover.py
+          - unset PYTHONPATH
+          - rose make-docs --venv --dev --strict clean linkcheck doctest html slides latexpdf
+          after_script:
+          - coverage combine --append
+          - coverage xml --ignore-errors
+          - java -jar ~/codacy-coverage-reporter-assembly.jar report -l Python -r ${TRAVIS_BUILD_DIR}/coverage.xml --partial
+
+        # Report metrics, such as coverage
+        - stage: report
+          script: java -jar ~/codacy-coverage-reporter-assembly.jar final
